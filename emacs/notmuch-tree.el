@@ -71,6 +71,11 @@ Note the author string should not contain
   :type '(alist :key-type (string) :value-type (string))
   :group 'notmuch-tree)
 
+(defcustom notmuch-tree-overlay-string " [...]"
+  "String displayed at the beginning of the overlay"
+  :type 'string
+  :group 'notmuch-tree)
+
 ;; Faces for messages that match the query.
 (defface notmuch-tree-match-face
   '((t :inherit default))
@@ -159,6 +164,13 @@ Note the author string should not contain
   :group 'notmuch-tree
   :group 'notmuch-faces)
 
+;; Faces for overlays
+(defface notmuch-tree-overlay-fold-face
+  '((t :inherit 'font-lock-keyword-face))
+  "Default face used to display `notmuch-tree-overlay-string'"
+  :group 'notmuch-tree
+  :group 'notmuch-faces)
+
 (defvar notmuch-tree-previous-subject
   "The subject of the most recent result shown during the async display")
 (make-variable-buffer-local 'notmuch-tree-previous-subject)
@@ -195,6 +207,9 @@ This is used to try and make sure we don't close the message pane
 if the user has loaded a different buffer in that window.")
 (make-variable-buffer-local 'notmuch-tree-message-buffer)
 (put 'notmuch-tree-message-buffer 'permanent-local t)
+
+(defvar notmuch-tree-overlays nil
+  "List of overlays used to fold/unfold thread")
 
 (defun notmuch-tree-to-message-pane (func)
   "Execute FUNC in message pane.
@@ -294,6 +309,7 @@ FUNC."
     (define-key map " " 'notmuch-tree-scroll-or-next)
     (define-key map (kbd "DEL") 'notmuch-tree-scroll-message-window-back)
     (define-key map "e" 'notmuch-tree-resume-message)
+    (define-key map "t" 'notmuch-tree-toggle-folding-thread)
     map))
 (fset 'notmuch-tree-mode-map notmuch-tree-mode-map)
 
@@ -414,6 +430,80 @@ NOT change the database."
     (if id
 	(notmuch-draft-resume id)
       (message "No message to resume!"))))
+
+(defun notmuch-tree-find-overlay (buffer start end)
+  "Return the first overlay found in `notmuch-tree-overlays'.
+
+The overlay found is located between START and END position in BUFFER."
+  (cl-find-if (lambda (ov)
+	      (and (eq (overlay-buffer ov) buffer)
+		   (<= (overlay-start ov) start)
+		   (>= (overlay-end ov) end)))
+	    notmuch-tree-overlays))
+
+(defun notmuch-tree-clean-up-overlays ()
+  "Remove overlays not referenced to any buffer"
+  (setq notmuch-tree-overlays (cl-remove-if #'overlay-buffer notmuch-tree-overlays)))
+
+(defun notmuch-tree-remove-overlay (overlay)
+  "Delete OVERLAY and remove it from `notmuch-tree-overlays' list"
+  (setq notmuch-tree-overlays (remove overlay notmuch-tree-overlays))
+  (delete-overlay overlay))
+
+(defun notmuch-tree-add-overlay (start end)
+  "Add an overlay from START to END in the current buffer.
+
+If non nil, `notmuch-tree-overlay-string' is added at the end of the line.
+The overlay created is added to `notmuch-tree-overlays' list"
+  (let ((overlay (make-overlay start end)))
+    (add-to-list 'notmuch-tree-overlays overlay)
+    (overlay-put overlay 'invisible t)
+    (when notmuch-tree-overlay-string
+      (overlay-put overlay 'before-string
+		   (propertize notmuch-tree-overlay-string
+			       'face 'notmuch-tree-overlay-fold-face)))))
+
+(defun notmuch-tree-thread-range ()
+  "Return list of Start and End position of the current thread"
+  (let (start end)
+    (save-excursion
+      (while (not (or (notmuch-tree-get-prop :first) (eobp)))
+	(forward-line -1))
+      (setq start (line-end-position))
+      (notmuch-tree-next-thread)
+      (setq end (- (point) 1))
+      (list start end))))
+
+(defun notmuch-tree-sub-thread-range ()
+  "Return list of Start and End position of the current sub-thread"
+  (if (notmuch-tree-get-prop :first)
+      (notmuch-tree-thread-range)
+    (let ((level (length (notmuch-tree-get-prop :tree-status)))
+	  (start (line-end-position))
+	  end)
+      ;; find end position
+      (save-excursion
+	(forward-line)
+	(while (and (< level (length (notmuch-tree-get-prop :tree-status)))
+		    (not (eobp)))
+	  (forward-line))
+	(setq end (- (point) 1)))
+      (list start end))))
+
+(defun notmuch-tree-toggle-folding-thread (&optional arg)
+  "Fold / Unfold the current thread or sub-thread.
+
+With prefix arg (C-u) the whole thread is folded"
+  (interactive "p")
+  (cl-multiple-value-bind (start end)
+      (if (and arg (= arg 1))
+	  (notmuch-tree-sub-thread-range)
+	(notmuch-tree-thread-range))
+    (unless (= start end)
+      (let ((overlay (notmuch-tree-find-overlay (current-buffer) start end)))
+	(if overlay
+	    (notmuch-tree-remove-overlay overlay)
+	  (notmuch-tree-add-overlay start end))))))
 
 ;; The next two functions close the message window before calling
 ;; notmuch-search or notmuch-tree but they do so after the user has
@@ -965,6 +1055,9 @@ The arguments are:
     (switch-to-buffer buffer))
   ;; Don't track undo information for this buffer
   (set 'buffer-undo-list t)
+
+  ;; clean-up overlays in case where some overlays reference to no buffer
+  (notmuch-tree-clean-up-overlays)
 
   (notmuch-tree-worker query query-context target open-target)
 
