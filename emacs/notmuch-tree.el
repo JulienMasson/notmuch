@@ -310,6 +310,7 @@ FUNC."
     (define-key map (kbd "DEL") 'notmuch-tree-scroll-message-window-back)
     (define-key map "e" 'notmuch-tree-resume-message)
     (define-key map "t" 'notmuch-tree-toggle-folding-thread)
+    (define-key map "T" 'notmuch-tree-toggle-folding-thread-all)
     map))
 (fset 'notmuch-tree-mode-map notmuch-tree-mode-map)
 
@@ -431,6 +432,12 @@ NOT change the database."
 	(notmuch-draft-resume id)
       (message "No message to resume!"))))
 
+(defun notmuch-tree-first-overlay (buffer)
+  "Return first overlay found which is referenced to BUFFER"
+  (cl-find-if (lambda (ov)
+		(eq (overlay-buffer ov) buffer))
+	      notmuch-tree-overlays))
+
 (defun notmuch-tree-find-overlay (buffer start end)
   "Return the first overlay found in `notmuch-tree-overlays'.
 
@@ -504,6 +511,23 @@ With prefix arg (C-u) the whole thread is folded"
 	(if overlay
 	    (notmuch-tree-remove-overlay overlay)
 	  (notmuch-tree-add-overlay start end))))))
+
+(defun notmuch-tree-toggle-folding-thread-all ()
+  "Fold / Unfold all the threads of the current query"
+  (interactive)
+  (let ((buffer (current-buffer)))
+    ;; Unfold all threads if the current buffer contain at least one overlay.
+    ;; Otherwise Fold all threads.
+    (if (notmuch-tree-first-overlay buffer)
+	(mapc (lambda (ov)
+		(when (eq (overlay-buffer ov) buffer)
+		  (notmuch-tree-remove-overlay ov)))
+	      notmuch-tree-overlays)
+      (save-excursion
+	(goto-char (point-min))
+	(while (< (point) (point-max))
+	  (notmuch-tree-toggle-folding-thread)
+	  (line-move 1))))))
 
 ;; The next two functions close the message window before calling
 ;; notmuch-search or notmuch-tree but they do so after the user has
